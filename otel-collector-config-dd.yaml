@@ -1,0 +1,579 @@
+connectors:
+  forward/compact: {}
+  forward/db: {}
+  forward/db_compact: {}
+  forward/sampled: {}
+  spanmetrics:
+    dimensions:
+      - name: http.method
+      - name: cgx.transaction
+      - name: cgx.transaction.root
+      - name: status_code
+      - name: http.response.status_code
+      - name: rpc.grpc.status_code
+      - name: service.version
+      - name: db.system
+      - name: db.namespace
+    histogram:
+      explicit:
+        buckets:
+          - 1ms
+          - 4ms
+          - 10ms
+          - 20ms
+          - 50ms
+          - 100ms
+          - 200ms
+          - 500ms
+          - 1s
+          - 2s
+          - 5s
+    metrics_expiration: 5m
+    metrics_flush_interval: '30s'
+    namespace: ''
+  spanmetrics/compact:
+    add_resource_attributes: true
+    aggregation_cardinality_limit: 100000
+    exclude_dimensions:
+    - span.name
+    histogram:
+      explicit:
+        buckets:
+        - 1ms
+        - 4ms
+        - 10ms
+        - 20ms
+        - 50ms
+        - 100ms
+        - 200ms
+        - 500ms
+        - 1s
+        - 2s
+        - 5s
+      unit: ms
+    metrics_expiration: 5m
+    metrics_flush_interval: '30s'
+    namespace: compact
+  spanmetrics/db:
+    dimensions:
+      - name: db.namespace
+      - name: db.operation.name
+      - name: db.collection_name
+      - name: db.system
+      - name: service.version
+    histogram:
+      explicit:
+        buckets:
+          - 100us
+          - 1ms
+          - 2ms
+          - 2.5ms
+          - 4ms
+          - 6ms
+          - 10ms
+          - 100ms
+          - 250ms
+    metrics_expiration: 5m
+    metrics_flush_interval: '30s'
+    namespace: db
+  spanmetrics/db_compact:
+    add_resource_attributes: true
+    aggregation_cardinality_limit: 100000
+    dimensions:
+    - name: db.namespace
+    - name: db.system
+    exclude_dimensions:
+    - span.name
+    - span.kind
+    histogram:
+      explicit:
+        buckets:
+        - 1ms
+        - 4ms
+        - 10ms
+        - 20ms
+        - 50ms
+        - 100ms
+        - 200ms
+        - 500ms
+        - 1s
+        - 2s
+        - 5s
+      unit: ms
+    metrics_expiration: 5m
+    metrics_flush_interval: '30s'
+    namespace: db_compact
+receivers:
+  datadog:
+    endpoint: 0.0.0.0:8126
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+  filelog:
+    force_flush_period: 0
+    include:
+    - /var/log/syslog
+    - /var/log/supervisor/*.log
+    - /home/ec2-user/logs/*/*/*/*/*.log
+    include_file_name: true
+    include_file_path: false
+    retry_on_failure:
+      enabled: true
+    start_at: beginning
+    storage: file_storage
+  hostmetrics:
+    root_path: /
+    collection_interval: 60s
+    scrapers:
+      cpu: { metrics: { system.cpu.utilization: { enabled: true } } }
+      filesystem:
+        exclude_fs_types:
+          {
+            fs_types:
+              [
+                autofs,
+                binfmt_misc,
+                bpf,
+                cgroup2,
+                configfs,
+                debugfs,
+                devpts,
+                devtmpfs,
+                fusectl,
+                hugetlbfs,
+                iso9660,
+                mqueue,
+                nsfs,
+                overlay,
+                proc,
+                procfs,
+                pstore,
+                rpc_pipefs,
+                securityfs,
+                selinuxfs,
+                squashfs,
+                sysfs,
+                tracefs,
+              ],
+            match_type: strict,
+          }
+        exclude_mount_points:
+          {
+            match_type: regexp,
+            mount_points:
+              [
+                /dev/*,
+                /proc/*,
+                /sys/*,
+                /run/k3s/containerd/*,
+                /run/containerd/runc/*,
+                /var/lib/docker/*,
+                /var/lib/kubelet/*,
+                /snap/*,
+              ],
+          }
+      memory: { metrics: { system.memory.utilization: { enabled: true } } }
+      network:
+      process:
+        metrics:
+          process.cpu.utilization: { enabled: true }
+          process.memory.utilization: { enabled: true }
+          process.threads: { enabled: true }
+        mute_process_all_errors: true
+        mute_process_exe_error: true
+        mute_process_user_error: true
+
+processors:
+  batch: { send_batch_max_size: 2048, send_batch_size: 1024, timeout: 1s }
+  filter/db_compact_spanmetrics:
+    traces:
+      span:
+      - kind != SPAN_KIND_CLIENT or attributes["db.namespace"] == nil or attributes["db.system"] == nil 
+  filter/db_spanmetrics:
+    traces:
+      span:
+        - attributes["db.system"] == nil 
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1000
+    spike_limit_mib: 800
+  redaction/spanname:
+    allow_all_keys: true
+    db_sanitizer: null
+    url_sanitizer:
+      enabled: true
+  resourcedetection:
+    detectors: [system, env, ec2]
+    override: false
+    timeout: 2s
+  resource/metadata:
+    attributes:
+      - action: upsert
+        key: cx.otel_integration.name
+        value: coralogix-integration-OTEL-EC2-service
+  resourcedetection/entity:
+    detectors: [system, env, ec2, ecs]
+    override: false
+    timeout: 2s
+    system:
+      resource_attributes:
+        host.id: { enabled: false }
+        host.cpu.cache.l2.size: { enabled: true }
+        host.cpu.stepping: { enabled: true }
+        host.cpu.model.name: { enabled: true }
+        host.cpu.model.id: { enabled: true }
+        host.cpu.family: { enabled: true }
+        host.cpu.vendor.id: { enabled: true }
+        host.mac: { enabled: true }
+        host.ip: { enabled: true }
+        os.description: { enabled: true }
+  transform/compact:
+    trace_statements:
+    - context: resource
+      statements:
+      - keep_keys(attributes, ["service.name", "k8s.cluster.name", "host.name", "deployment.environment.name"])
+  transform/db_compact:
+    trace_statements:
+    - context: resource
+      statements:
+      - keep_keys(attributes, ["service.name", "k8s.cluster.name", "host.name", "deployment.environment.name"])
+    - context: span
+      statements:
+      - keep_keys(attributes, ["db.namespace", "db.system"])
+  transform/entity-event:
+    error_mode: silent
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["otel.entity.id"]["host.id"], resource.attributes["host.id"])
+          - merge_maps(attributes, resource.attributes, "insert")
+      - context: resource
+        statements:
+          - keep_keys(attributes, [""])
+  transform/db:
+    error_mode: silent
+    trace_statements:
+      - context: span
+        statements:
+          - replace_pattern(attributes["db.query.text"], "\\d+", "?")
+          - set(attributes["span.duration_ns"], end_time_unix_nano - start_time_unix_nano)
+  # transform/add_route_to_service:
+  #   error_mode: ignore
+  #   trace_statements:
+  #     - context: span
+  #       conditions:
+  #         - attributes["http.route"] == nil and span.kind == 3 and attributes["service.name"] == "pf-java-stage"
+  #       statements:
+  #         - set(attributes["http.route"], attributes["url.full"])
+  #         - replace_pattern(attributes["http.route"], "^(/[^/]+(/[^/]+(/[^/]+)?)?)?.*", "$$1")
+  #         - set(name, Concat([attributes["http.request.method"], attributes["http.route"]], " ")) 
+
+  ################THIS IS THE TEST FOR SPAN REGEX TRANSFORMATION, NOT FOR PRODUCTION USE. DO NOT USE THIS AS AN EXAMPLE FOR HOW TO DO SPAN TRANSFORMATION IN PRODUCTION.################
+  # transform/testregexspanname:
+  #           error_mode: propagate
+  #           trace_statements:
+  #             - context: span
+  #               statements:
+  #                 # - set(attributes["teststring1"], "GET /zo-internal/assigned_variant/experiments/BAAZI_HOME_AD/users/12970166") where attributes["url.query"] != nil
+  #                 # - set(name, attributes["teststring1"]) where attributes["url.query"] != nil
+  #                 # - replace_pattern(name, "/(users|conversations|credentials|messages|v1|v2|v3|v4)/[^/]+", "/\\1/{id}")
+  #                 # - set(attributes["teststring"], attributes["url.path"]) where attributes["http.request.method"] == POST
+  #                 - set(attributes["teststring1"], "http://10.136.162.185:8093/pl-cc-recommendation") 
+  #                 - set(attributes["http.method"], attributes["teststring1"]) 
+  #                 - set(attributes["http.route1"], attributes["http.route"])
+  #                 - set(attributes["http.route"], attributes["url.path"]) where attributes["http.route"] == "/**"
+  #                 - set(attributes["url.full"], attributes["http.route"]) where attributes["url.full"] == nil
+                  # - replace_pattern(attributes["teststring1"], "(?:\\/|\\/)([0-9a-fA-F]{24,32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]+)(?:\\/|\\/|\\?.*|$)", "/{id}/")
+                  # - replace_pattern(attributes["teststring2"], "(?:\\/|\\/)([0-9a-fA-F]{24,32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]+)(?:\\/|\\/|\\?.*|$)", "/{id}/")
+                  # - replace_pattern(attributes["teststring3"], "(?:\\/|\\/)([0-9a-fA-F]{24,32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]+)(?:\\/|\\/|\\?.*|$)", "/{id}/")
+                  # - replace_pattern(attributes["teststring4"], "(?:\\/|\\/)([0-9a-fA-F]{24,32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]+)(?:\\/|\\/|\\?.*|$)", "/{id}/")
+                  # - replace_pattern(attributes["teststring5"], "(?:\\/|\\/)([0-9a-fA-F]{24,32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]+)(?:\\/|\\/|\\?.*|$)", "/{id}/")
+                  # - replace_pattern(attributes["teststring6"], "(?:\\/|\\/)([0-9a-fA-F]{24,32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]+)(?:\\/|\\/|\\?.*|$)", "/{id}/")
+                  # - replace_pattern(attributes["teststring1"], "(?:\\/|\\/)([0-9a-fA-F]{24,32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9]+)(?:\\/|\\/|\\?.*|$)", "{id}/")
+                  # - replace_pattern(attributes["teststring1"], "\\?.*", "")    
+  # transform/db_spanmetrics:
+  #   error_mode: silent
+  #   trace_statements:
+  #     - context: span
+  #       statements:
+  #         - set(attributes["db.namespace"], attributes["db.name"]) where attributes["db.namespace"]== nil
+  #         - set(attributes["db.namespace"], attributes["server.address"]) where attributes["db.namespace"]== nil
+  #         - set(attributes["db.namespace"], attributes["network.peer.name"]) where attributes["db.namespace"]== nil
+  #         - set(attributes["db.namespace"], attributes["net.peer.name"]) where attributes["db.namespace"]== nil
+  #         - set(attributes["db.namespace"], attributes["db.system"]) where attributes["db.namespace"]== nil
+  #         - set(attributes["db.operation.name"], attributes["db.operation"]) where attributes["db.operation.name"]== nil
+  #         - set(attributes["db.collection.name"], attributes["db.sql.table"]) where attributes["db.collection.name"]== nil
+  #         - set(attributes["db.collection.name"], attributes["db.cassandra.table"]) where attributes["db.collection.name"] == nil
+  #         - set(attributes["db.collection.name"], attributes["db.mongodb.collection"]) where attributes["db.collection.name"] == nil
+  #         - set(attributes["db.collection.name"], attributes["db.redis.database_index"]) where attributes["db.collection.name"] == nil
+  #         - set(attributes["db.collection.name"], attributes["db.elasticsearch.path_parts.index"]) where attributes["db.collection.name"] == nil
+  #         - set(attributes["db.collection.name"], attributes["db.cosmosdb.container"]) where attributes["db.collection.name"] == nil
+  #         - set(attributes["db.collection.name"], attributes["aws_dynamodb.table_names"]) where attributes["db.collection.name"] == nil
+  transform/db_spanmetrics:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        conditions:
+          - attributes["db.system"] != nil 
+        statements:
+          - set(attributes["db.namespace"], attributes["db.name"]) where attributes["db.namespace"] == nil
+          - set(attributes["db.namespace"], attributes["db.system"]) where attributes["db.namespace"] == nil
+          - set(attributes["db.operation.name"], attributes["db.operation"]) where attributes["db.operation.name"] == nil
+          - set(attributes["db.collection.name"], attributes["db.namespace"]) where attributes["db.collection.name"] == nil 
+          - set(attributes["db.collection.name"], attributes["db.sql.table"]) where attributes["db.collection.name"] == nil
+          - set(attributes["db.collection.name"], attributes["db.cassandra.table"]) where attributes["db.collection.name"] == nil
+          - set(attributes["db.collection.name"], attributes["db.mongodb.collection"]) where attributes["db.collection.name"] == nil
+          - set(attributes["db.collection.name"], attributes["db.elasticsearch.path_parts.index"]) where attributes["db.collection.name"] == nil
+          - set(attributes["db.collection.name"], attributes["db.cosmosdb.container"]) where attributes["db.collection.name"] == nil
+          - set(attributes["db.collection.name"], attributes["aws.dynamodb.table_names"]) where attributes["db.collection.name"] == nil
+  transform/dd_mysql_to_otel:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Map "db.system.name" -> "db.system" (what your filters/spanmetrics expect)
+          - set(attributes["db.system"], attributes["db.system.name"]) where attributes["db.system"] == nil and attributes["db.system.name"] != nil
+
+          # Ensure db.namespace exists (your spanmetrics/db uses it heavily)
+          - set(attributes["db.namespace"], attributes["db.name"]) where attributes["db.namespace"] == nil and attributes["db.name"] != nil
+
+          # Map SQL text from Datadog resource -> OTel db.query.text
+          - set(attributes["db.query.text"], attributes["dd.span.Resource"]) where attributes["db.query.text"] == nil and attributes["dd.span.Resource"] != nil
+
+          # Optional: host mapping
+          - set(attributes["server.address"], attributes["out.host"]) where attributes["server.address"] == nil and attributes["out.host"] != nil
+  transform/dd_redis_to_otel:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          # Identify redis spans by component or operation name
+          - set(attributes["db.system"], "redis")
+            where attributes["db.system"] == nil and (attributes["component"] == "StackExchangeRedis" or name == "redis.command")
+
+          # Provide a namespace so spanmetrics/db has something consistent
+          # If you have "out.host" (redis service name), use it
+          - set(attributes["db.namespace"], attributes["out.host"])
+            where attributes["db.namespace"] == nil and attributes["out.host"] != nil and (attributes["component"] == "StackExchangeRedis" or name == "redis.command")
+
+          # If not, use server.address
+          - set(attributes["db.namespace"], attributes["server.address"])
+            where attributes["db.namespace"] == nil and attributes["server.address"] != nil and (attributes["component"] == "StackExchangeRedis" or name == "redis.command")
+
+          # Optionally map redis db index into db.namespace if you prefer (optional)
+          # - set(attributes["db.namespace"], Concat(["db", attributes["db.redis.database_index"]], ""))
+          #   where attributes["db.namespace"] == nil and attributes["db.redis.database_index"] != nil and (attributes["component"] == "StackExchangeRedis" or name == "redis.command")
+
+  transform/spanmetrics:
+    error_mode: silent
+    metric_statements:
+    - context: datapoint
+      statements:
+      - set(attributes["status.code"], "STATUS_CODE_ERROR") where attributes["status.code"]
+        == nil and attributes["span.name"] != nil and attributes["otel.status_code"]
+        == "ERROR"
+      - set(attributes["status.code"], "STATUS_CODE_OK") where attributes["status.code"]
+        == nil and attributes["span.name"] != nil and attributes["otel.status_code"]
+        == "OK"
+      - set(attributes["status.code"], "STATUS_CODE_UNSET") where attributes["status.code"]
+        == nil and attributes["span.name"] != nil and (attributes["otel.status_code"]
+        == "UNSET" or attributes["otel.status_code"] == nil)
+  transform/spanmetrics_labels:
+    error_mode: ignore
+    metric_statements:
+      - conditions:
+          - IsMatch(name, "calls")
+          - IsMatch(name, "duration")
+          - IsMatch(name, "db_calls")
+          - IsMatch(name, "db_duration")
+        context: metric
+        statements:
+          - delete_key(resource.attributes, "telemetry.sdk.name")
+          - delete_key(resource.attributes, "telemetry.sdk.language")
+          - delete_key(resource.attributes, "telemetry.sdk.version")
+  transform/semconv:
+    error_mode: ignore
+    trace_statements:
+    - context: span
+      statements:
+      - set(attributes["http.method"], attributes["http.request.method"]) where attributes["http.request.method"]
+        != nil
+
+  tail_sampling:
+    decision_cache:
+      non_sampled_cache_size: 0
+      sampled_cache_size: 0
+    decision_wait: 30s
+    expected_new_traces_per_sec: 0
+    num_traces: 50000
+    policies:
+      [
+        {
+          name: errors-policy,
+          type: status_code,
+          status_code: { status_codes: [ERROR] },
+        },
+        {
+          name: randomized-policy,
+          type: probabilistic,
+          probabilistic: { sampling_percentage: 100 },
+        },
+      ]
+
+exporters:
+  debug:
+    verbosity: detailed
+  coralogix:
+    domain: "app.coralogix.in"
+    private_key: "HAHAHAHA"
+    application_name: "sample_dotnet_core_otel"
+    subsystem_name: "sample_dotnet_core_otel"
+    # These configuration values can be used to dynamically set the application_name and subsystem_name
+    # application_name_attributes:
+    # - host.id
+    subsystem_name_attributes:
+      - host.name
+    timeout: 30s
+  coralogix/resource_catalog:
+    application_name: resource
+    domain: "app.coralogix.in"
+    private_key: "HAHAHAHA"
+    logs:
+      headers:
+        X-Coralogix-Distribution: ec2-local-integration/0.0.1
+        x-coralogix-ingress: metadata-as-otlp-logs/v1
+    subsystem_name: catalog
+    timeout: 30s
+
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol/storage
+    create_directory: true 
+
+service:
+  extensions:
+    - file_storage
+  telemetry:
+    logs:
+      encoding: json
+      level: 'debug'
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: localhost
+                port: 8888
+  pipelines:
+    logs:
+      receivers:
+        - filelog
+      processors:
+        - resourcedetection
+        - batch
+      exporters:
+        - coralogix
+    metrics:
+      exporters:
+      - coralogix
+      processors:
+      - memory_limiter
+      - resourcedetection
+      # - resourcedetection/env
+      - resource/metadata
+      - transform/spanmetrics
+      # - transform/reduce
+      # - transform/prometheus
+      - batch
+      receivers:
+      - hostmetrics
+      - spanmetrics
+      - spanmetrics/db
+      # - prometheus
+      - otlp
+    metrics/compact:
+      exporters:
+      - coralogix
+      processors:
+      - memory_limiter
+      - transform/spanmetrics
+      - batch
+      receivers:
+      - spanmetrics/compact
+    metrics/db_compact:
+      exporters:
+      - coralogix
+      processors:
+      - memory_limiter
+      - transform/spanmetrics
+      - batch
+      receivers:
+      - spanmetrics/db_compact
+    traces:
+      receivers:
+        - otlp
+        - datadog
+      processors:
+        - resourcedetection
+        - transform/dd_redis_to_otel
+        - transform/dd_mysql_to_otel
+        # - transform/add_route_to_service
+        # - transform/testregexspanname
+        - transform/db_spanmetrics
+        - redaction/spanname
+        - transform/semconv
+        - batch
+      exporters:
+        - spanmetrics
+        - forward/db
+        - forward/compact
+        - forward/db_compact
+        - forward/sampled
+        - debug
+        - coralogix
+    traces/compact:
+      exporters:
+      - spanmetrics/compact
+      processors:
+      - transform/compact
+      - batch
+      receivers:
+      - forward/compact
+    traces/sampling:
+      exporters:
+        - coralogix
+      processors:
+        - tail_sampling
+        - batch
+      receivers:
+        - forward/sampled
+    traces/db:
+      exporters:
+        - spanmetrics/db
+      processors:
+        - filter/db_spanmetrics
+        - transform/db
+        - batch
+      receivers:
+        - forward/db
+    traces/db_compact:
+      exporters:
+      - spanmetrics/db_compact
+      processors:
+      - filter/db_compact_spanmetrics
+      - transform/db_compact
+      - batch
+      receivers:
+      - forward/db_compact
+    logs/resource_catalog:
+      exporters:
+        - coralogix/resource_catalog
+      processors:
+        - memory_limiter
+        - resource/metadata
+        - resourcedetection/entity
+        - transform/entity-event
+      receivers:
+        - hostmetrics
+
