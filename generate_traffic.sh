@@ -17,7 +17,7 @@ while true; do
         "http://localhost:8080/param/user${counter}"
         "http://localhost:8080/mysql"
         "http://localhost:8080/redis"
-        "http://localhost:8080/kafka/produce"
+        # "http://localhost:8080/kafka/produce"
         "http://localhost:8080/api"
     )
     

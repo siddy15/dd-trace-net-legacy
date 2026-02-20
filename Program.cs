@@ -15,7 +15,7 @@ builder.Services.AddDbContext<TodoContext>(opt =>
     ));
 
 builder.Services.AddStackExchangeRedisCache(options =>
- {
+ {  
      options.Configuration = builder.Configuration.GetConnectionString("Redis");
      options.InstanceName = "SampleInstance";
  });
@@ -23,6 +23,25 @@ builder.Services.AddStackExchangeRedisCache(options =>
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("DevCors", policy =>
+    {
+        policy
+            .WithOrigins("http://localhost:5173")
+            .WithMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+            .WithHeaders(
+                "content-type",
+                "traceparent",
+                "tracestate",
+                "baggage",
+                "x-internal-span",
+                "x-scenario"
+            );
+    });
+});
+
 
 var app = builder.Build();
 
@@ -41,5 +60,7 @@ app.UseHttpsRedirection();
 app.UseAuthorization();
 
 app.MapControllers();
+
+app.UseCors("DevCors");
 
 app.Run();

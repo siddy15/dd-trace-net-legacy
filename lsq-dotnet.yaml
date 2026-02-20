@@ -1,0 +1,330 @@
+global:
+  domain: "ap1.coralogix.com"
+  clusterName: "lsq-net"
+  defaultApplicationName: "otel"
+  defaultSubsystemName: "integration"
+  logLevel: "debug"
+  collectionInterval: "30s"
+
+opentelemetry-receiver:
+  enabled: true
+  # Receiver needs to be exposed either via Service of type LoadBalancer or Ingress
+  presets:
+    metadata:
+      enabled: true
+      clusterName: "{{.Values.global.clusterName}}"
+      integrationName: "coralogix-integration-helm"
+    reduceResourceAttributes:
+      enabled: true
+    fleetManagement:
+      enabled: false
+    logsCollection:
+      enabled: true
+      includeCollectorLogs: true
+
+    spanMetrics:
+      enabled: true
+      collectionInterval: "{{.Values.global.collectionInterval}}"
+      metricsExpiration: 5m
+      histogramBuckets:
+      - 1ms
+      - 4ms
+      - 10ms
+      - 20ms
+      - 50ms
+      - 100ms
+      - 200ms
+      serviceVersion:
+        enabled: true
+      errorTracking:
+        enabled: true
+      dbMetrics:
+        enabled: true
+        serviceVersion:
+          enabled: true
+    spanMetricsSanitization:
+      enabled: false
+      sanitize_url: false
+    loadBalancing:
+      enabled: false
+      routingKey: 'traceID'
+      hostname: coralogix-opentelemetry-gateway
+    
+    kubernetesAttributes:
+      enabled: true
+    hostMetrics:
+      enabled: true
+      process:
+        enabled: true
+      collectionInterval: "{{.Values.global.collectionInterval}}"
+    kubeletMetrics:
+      enabled: true
+      collectionInterval: "{{.Values.global.collectionInterval}}"
+    hostEntityEvents:
+      enabled: true
+    otlpReceiver:
+      enabled: true
+    resourceDetection:
+      enabled: true
+      deploymentEnvironmentName: "{{.Values.global.deploymentEnvironmentName}}"
+    collectorMetrics:
+      enabled: true
+      scrapeInterval: "{{.Values.global.collectionInterval}}"
+    batch:
+      enabled: true
+      sendBatchSize: 1024
+      sendBatchMaxSize: 2048
+      timeout: "1s"
+
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+
+  config:
+    connectors:
+      spanmetrics:
+        aggregation_cardinality_limit: 10000
+      spanmetrics/db: {}
+    receivers:
+      datadog:
+        endpoint: 0.0.0.0:8126
+      otlp: 
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+            cors:
+              allowed_origins:
+                - http://localhost:5173
+                - http://127.0.0.1:5173
+              allowed_headers:
+                - Content-Type
+                - Accept
+                - '*'
+                - X-Coralogix-Trace-Id
+                - X-Coralogix-Span-Id
+                - X-Coralogix-Trace-Flags
+                - X-Coralogix-Trace-State
+                
+    processors:
+      transform/db:
+        error_mode: silent
+        trace_statements:
+          - context: span
+            statements:
+              - replace_pattern(attributes["db.query.text"], "\\d+", "?")
+              - set(attributes["span.duration_ns"], end_time_unix_nano - start_time_unix_nano)
+      transform/dd_mysql_to_otel:
+        error_mode: ignore
+        trace_statements:
+           - context: span
+             statements:
+                # Map "db.system.name" -> "db.system" (what your filters/spanmetrics expect)
+              - set(attributes["db.system"], attributes["db.system.name"]) where attributes["db.system"] == nil and attributes["db.system.name"] != nil
+
+              # Ensure db.namespace exists (your spanmetrics/db uses it heavily)
+              - set(attributes["db.namespace"], attributes["db.name"]) where attributes["db.namespace"] == nil and attributes["db.name"] != nil
+
+              # Map SQL text from Datadog resource -> OTel db.query.text
+              - set(attributes["db.query.text"], attributes["dd.span.Resource"]) where attributes["db.query.text"] == nil and attributes["dd.span.Resource"] != nil
+
+              # Optional: host mapping
+              - set(attributes["server.address"], attributes["out.host"]) where attributes["server.address"] == nil and attributes["out.host"] != nil
+      transform/dd_redis_to_otel:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              # Identify redis spans by component or operation name
+              - set(attributes["db.system"], "redis")
+                where attributes["db.system"] == nil and (attributes["component"] == "StackExchangeRedis" or name == "redis.command")
+
+              # Provide a namespace so spanmetrics/db has something consistent
+              # If you have "out.host" (redis service name), use it
+              - set(attributes["db.namespace"], attributes["out.host"])
+                where attributes["db.namespace"] == nil and attributes["out.host"] != nil and (attributes["component"] == "StackExchangeRedis" or name == "redis.command")
+
+              # If not, use server.address
+              - set(attributes["db.namespace"], attributes["server.address"])
+                where attributes["db.namespace"] == nil and attributes["server.address"] != nil and (attributes["component"] == "StackExchangeRedis" or name == "redis.command")
+
+              # Optionally map redis db index into db.namespace if you prefer (optional)
+              # - set(attributes["db.namespace"], Concat(["db", attributes["db.redis.database_index"]], ""))
+              #   where attributes["db.namespace"] == nil and attributes["db.redis.database_index"] != nil and (attributes["component"] == "StackExchangeRedis" or name == "redis.command")
+      transform/convert_otel_ddtrace_ids:
+        error_mode: silent
+        trace_statements:
+          - context: span
+            statements:
+            - set(attributes["otel.trace.id"], trace_id.string)
+            - set(trace_id.string, Concat(["0000000000000000", Substring(trace_id.string, 16, 16)],""))
+      transform/spanmetrics:
+        error_mode: silent
+        metric_statements:
+          - context: datapoint
+            statements:
+            - set(attributes["status.code"], "STATUS_CODE_ERROR") where attributes["status.code"]
+              == nil and attributes["span.name"] != nil and attributes["otel.status_code"]
+              == "ERROR"
+            - set(attributes["status.code"], "STATUS_CODE_OK") where attributes["status.code"]
+              == nil and attributes["span.name"] != nil and attributes["otel.status_code"]
+              == "OK"
+            - set(attributes["status.code"], "STATUS_CODE_UNSET") where attributes["status.code"]
+              == nil and attributes["span.name"] != nil and (attributes["otel.status_code"]
+              == "UNSET" or attributes["otel.status_code"] == nil)
+      transform/db_semconv:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            conditions:
+              - attributes["db.system"] != nil
+            statements:
+              - set(attributes["db.namespace"], attributes["db.name"]) where attributes["db.namespace"] == nil
+              - set(attributes["db.namespace"], attributes["db.system"]) where attributes["db.namespace"] == nil
+              - set(attributes["db.operation.name"], attributes["db.operation"]) where attributes["db.operation.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.namespace"]) where attributes["db.collection.name"] == nil and attributes["db.system"] == "redis"
+              - set(attributes["db.collection.name"], attributes["db.sql.table"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.cassandra.table"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.mongodb.collection"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.elasticsearch.path_parts.index"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["db.cosmosdb.container"]) where attributes["db.collection.name"] == nil
+              - set(attributes["db.collection.name"], attributes["aws.dynamodb.table_names"]) where attributes["db.collection.name"] == nil
+    service:
+      telemetry:
+        resource:
+          service.name: "opentelemetry-collector"
+          cx.agent.type: "agent"
+        logs:
+          level: "{{ .Values.global.logLevel }}"
+      pipelines:
+        metrics:
+          exporters:
+            - coralogix
+          processors:
+            - memory_limiter
+            - resource/metadata
+            - transform/prometheus
+            - k8sattributes
+            - transform/k8s_attributes
+            - batch
+          receivers:
+            - otlp
+            - prometheus
+            - hostmetrics
+            - spanmetrics
+            - spanmetrics/db
+        traces:
+          exporters:
+            # - loadbalancing
+            - coralogix
+            - spanmetrics
+            - spanmetrics/db
+          processors:
+            - k8sattributes
+            - memory_limiter
+            - transform/dd_mysql_to_otel
+            - transform/dd_redis_to_otel
+            - transform/convert_otel_ddtrace_ids
+            - transform/spanmetrics
+            - transform/db_semconv
+            - batch
+          receivers:
+            - otlp
+            - datadog
+        traces/db:
+          processors:
+          - transform/db
+        logs:
+          exporters:
+            - coralogix
+          processors:
+            - memory_limiter
+            - batch
+          receivers:
+            - otlp        
+  service:
+    enabled: true
+    type: ClusterIP
+    # type: LoadBalancer
+    # loadBalancerIP: 1.2.3.4
+    # loadBalancerSourceRanges: []
+    # loadBalancerClass: service.k8s.aws/nlb
+  
+    # By default, Service of type 'LoadBalancer' will be created setting 'externalTrafficPolicy: Cluster'
+    # unless other value is explicitly set.
+    # Possible values are Cluster or Local (https://kubernetes.io/docs/tasks/access-application-cluster/create-external-load-balancer/#preserving-the-client-source-ip)
+  # externalTrafficPolicy: Cluster
+  ingress:
+    enabled: false
+    # annotations: {}
+    # ingressClassName: nginx
+    # hosts:
+    #   - host: collector.example.com
+    #     paths:
+    #       - path: /
+    #         pathType: Prefix
+    #         port: 4318
+    # tls:
+    #   - secretName: collector-tls
+    #     hosts:
+    #       - collector.example.com
+  # For production use-cases please increase replicas
+  # and resource requests and limits
+  replicaCount: 1
+  # resources:
+  #   requests:
+  #     cpu: 0.5
+  #     memory: 256Mi
+  #   limits:
+  #     cpu: 2
+  #     memory: 2G
+
+opentelemetry-gateway:
+  enabled: false
+  presets:
+    coralogixExporter:
+      enabled: true
+      privateKey: ${env:CORALOGIX_PRIVATE_KEY}
+  # For production use-cases please increase replicas
+  # and resource requests and limits
+  replicaCount: 1
+  # resources:
+  #   requests:
+  #     cpu: 0.5
+  #     memory: 256Mi
+  #   limits:
+  #     cpu: 2
+  #     memory: 2G
+  config:
+    service:
+      pipelines:
+        traces:
+          exporters:
+            - coralogix
+          receivers:
+            - datadog
+    processors:
+      tail_sampling:
+        # Update configuration here, with your settings and tail sampling policies
+        # Docs: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/tailsamplingprocessor
+        policies:
+          [
+            #{
+            #  name: errors-policy,
+            #  type: status_code,
+            #  status_code: {status_codes: [ERROR]}
+            #},
+            {
+              name: randomized-policy,
+              type: probabilistic,
+              probabilistic: {sampling_percentage: 100}
+            },
+          ]
+
+opentelemetry-agent:
+  enabled: false
+opentelemetry-cluster-collector:
+  enabled: false
+opentelemetry-agent-windows:
+  enabled: false

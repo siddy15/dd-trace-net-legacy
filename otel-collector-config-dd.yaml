@@ -426,7 +426,7 @@ exporters:
     verbosity: detailed
   coralogix:
     domain: "app.coralogix.in"
-    private_key: "HAHAHAHA"
+    private_key: "cxtp_2GlwDoHsoeRSdtAiQ4OnKS4EFvo0yP"
     application_name: "sample_dotnet_core_otel"
     subsystem_name: "sample_dotnet_core_otel"
     # These configuration values can be used to dynamically set the application_name and subsystem_name
@@ -438,7 +438,7 @@ exporters:
   coralogix/resource_catalog:
     application_name: resource
     domain: "app.coralogix.in"
-    private_key: "HAHAHAHA"
+    private_key: "cxtp_2GlwDoHsoeRSdtAiQ4OnKS4EFvo0yP"
     logs:
       headers:
         X-Coralogix-Distribution: ec2-local-integration/0.0.1

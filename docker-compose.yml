@@ -108,7 +108,6 @@ services:
       - mysql
       - redis
       - kafka
-      - otel-collector
 
 
     environment:
@@ -117,9 +116,11 @@ services:
       - DD_SERVICE=sample_dotnet_core_dd
       - DD_ENV=dev
       - DD_VERSION=1.0.0
-      - DD_TRACE_AGENT_URL=http://otel-collector:8126
+      - DD_TRACE_AGENT_URL=http://host.docker.internal:8126/
       - DD_TRACE_DEBUG=true
-
+      - DD_TRACE_PROPAGATION_STYLE_EXTRACT=tracecontext,Datadog,baggage
+      - DD_TRACE_PROPAGATION_STYLE_INJECT=tracecontext,Datadog,baggage
+      - DD_TRACE_128_BIT_TRACEID_GENERATION_ENABLED=true
       # Enable profiler for auto-instrumentation
       - CORECLR_ENABLE_PROFILING=1
       - CORECLR_PROFILER={846F5F1C-F9AE-4B07-969E-05C26BC060D8}
@@ -140,18 +141,18 @@ services:
       - "8080:8080"
     restart: always
 
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
-    command: ["--config=/etc/otelcol-config.yaml"]
-    volumes:
-      - ./otel-collector-config-dd.yaml:/etc/otelcol-config.yaml
-      - otel-storage:/var/lib/otelcol
-    user: "0:0"
-    ports:
-      - "4317:4317"
-      - "4318:4318"
-      - "8126:8126"
-    restart: unless-stopped
+  # otel-collector:
+  #   image: otel/opentelemetry-collector-contrib:latest
+  #   command: ["--config=/etc/otelcol-config.yaml"]
+  #   volumes:
+  #     - ./otel-collector-config-dd.yaml:/etc/otelcol-config.yaml
+  #     - otel-storage:/var/lib/otelcol
+  #   user: "0:0"
+  #   ports:
+  #     - "4317:4317"
+  #     - "4318:4318"
+  #     - "8126:8126"
+  #   restart: unless-stopped
 
   mysql:
     image: mysql:8.0
