@@ -1,6 +1,6 @@
 global:
   domain: "ap1.coralogix.com"
-  clusterName: "lsq-net"
+  clusterName: "ls-net"
   defaultApplicationName: "otel"
   defaultSubsystemName: "integration"
   logLevel: "debug"
